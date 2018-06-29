@@ -1,0 +1,63 @@
+import org.gradle.internal.os.OperatingSystem
+
+buildscript {
+	ext.kotlin_version = '1.2.50'
+
+	repositories {
+		mavenCentral()
+	}
+	dependencies {
+		classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+	}
+}
+
+group 'org.jglrxavpok.kameboy'
+version '1.0-SNAPSHOT'
+
+apply plugin: 'kotlin'
+
+repositories {
+	mavenCentral()
+}
+
+project.ext.lwjglVersion = "3.1.6"
+project.ext.jomlVersion = "1.9.9"
+
+switch ( OperatingSystem.current() ) {
+	case OperatingSystem.WINDOWS:
+		project.ext.lwjglNatives = "natives-windows"
+		break
+	case OperatingSystem.LINUX:
+		project.ext.lwjglNatives = "natives-linux"
+		break
+	case OperatingSystem.MAC_OS:
+		project.ext.lwjglNatives = "natives-macos"
+		break
+}
+
+dependencies {
+	// LWJGL
+	compile "org.lwjgl:lwjgl:${lwjglVersion}"
+	compile "org.lwjgl:lwjgl-glfw:${lwjglVersion}"
+	compile "org.lwjgl:lwjgl-jemalloc:${lwjglVersion}"
+	compile "org.lwjgl:lwjgl-openal:${lwjglVersion}"
+	compile "org.lwjgl:lwjgl-opengl:${lwjglVersion}"
+	compile "org.lwjgl:lwjgl-vulkan:$lwjglVersion"
+	runtime "org.lwjgl:lwjgl:${lwjglVersion}:${lwjglNatives}"
+	runtime "org.lwjgl:lwjgl-glfw:${lwjglVersion}:${lwjglNatives}"
+	runtime "org.lwjgl:lwjgl-jemalloc:${lwjglVersion}:${lwjglNatives}"
+	runtime "org.lwjgl:lwjgl-openal:${lwjglVersion}:${lwjglNatives}"
+	runtime "org.lwjgl:lwjgl-opengl:${lwjglVersion}:${lwjglNatives}"
+
+    compile "org.joml:joml:${jomlVersion}"
+
+	compile "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
+	compile "org.jetbrains.kotlin:kotlin-reflect:$kotlin_version"
+}
+
+compileKotlin {
+	kotlinOptions.jvmTarget = "1.8"
+}
+compileTestKotlin {
+	kotlinOptions.jvmTarget = "1.8"
+}
