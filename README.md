@@ -3,5 +3,5 @@ Kotlin implementation of [Vulkan Tutorial by Alexander Overvoorde](https://vulka
 Uses LWJGL3
 
 Branches:
-* [Master](tree/master/)
-* [Triangle](tree/triangle/)
+* [Master](../../tree/master/)
+* [Triangle](../../tree/triangle/)
