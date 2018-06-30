@@ -121,6 +121,19 @@ object VulkanStart {
         graphicsQueue = createGraphicsQueue()
         presentQueue = createPresentQueue()
 
+        createCommandPool()
+        prepareSwapchain()
+        createSyncObjects()
+    }
+
+    private fun recreateSwapChain() {
+        vkDeviceWaitIdle(logicalDevice)
+        cleanupSwapchain()
+
+        prepareSwapchain()
+    }
+
+    private fun prepareSwapchain() {
         swapchainDetails = querySwapChainSupport(physicalDevice)
         swapchainFormat = chooseSwapSurfaceFormat(swapchainDetails.formats)
         swapchainImageFormat = swapchainFormat.format()
@@ -135,9 +148,27 @@ object VulkanStart {
         createRenderPass()
         createGraphicsPipeline()
         createFramebuffers()
-        createCommandPool()
         createCommandBuffers()
-        createSyncObjects()
+    }
+
+    private fun cleanupSwapchain() {
+        for(framebuffer in swapchainFramebuffers) {
+            vkDestroyFramebuffer(logicalDevice, framebuffer, null)
+        }
+
+        val commandBufferPointers = memAllocPointer(commandBuffers.size)
+        commandBuffers.forEach { commandBufferPointers.put(it) }
+        commandBufferPointers.flip()
+        vkFreeCommandBuffers(logicalDevice, commandPool, commandBufferPointers)
+        memFree(commandBufferPointers)
+
+        vkDestroyPipeline(logicalDevice, graphicsPipeline, null)
+        vkDestroyPipelineLayout(logicalDevice, pipelineLayout, null)
+        vkDestroyRenderPass(logicalDevice, renderPass, null)
+        for(imageView in swapchainImageViews) {
+            vkDestroyImageView(logicalDevice, imageView, null)
+        }
+        vkDestroySwapchainKHR(logicalDevice, swapchain, null)
     }
 
     private fun createSyncObjects() {
@@ -246,7 +277,7 @@ object VulkanStart {
         }
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API)
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE)
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE)
         windowPointer = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan test", nullptr, nullptr)
     }
 
@@ -268,8 +299,10 @@ object VulkanStart {
         MemoryStack.stackPush().use { mem ->
             val imageIndex = mem.mallocInt(1)
             val err = vkAcquireNextImageKHR(logicalDevice, swapchain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, imageIndex)
-            if(err != VK_SUCCESS) {
-                println("!! ${Integer.toHexString(err)} / $err -> ${translateVulkanResult(err)}")
+            when(err) {
+                VK_SUCCESS, VK_SUBOPTIMAL_KHR -> Unit
+                VK_ERROR_OUT_OF_DATE_KHR -> { recreateSwapChain(); return@use }
+                else -> error("Failed to acquire swap chain images $err")
             }
 
             imageIndex.rewind()
@@ -292,10 +325,7 @@ object VulkanStart {
             val signalSemaphores = BufferUtils.createLongBuffer(1).put(renderFinishedSemaphores[currentFrame]).flip() as LongBuffer
             submitInfo.pSignalSemaphores(signalSemaphores)
 
-            val err2 = vkQueueSubmit(graphicsQueue, submitInfo, inFlightFences[currentFrame])
-            if(err2 != VK_SUCCESS) {
-                error("Failed to submit draw command buffer ${translateVulkanResult(err2)}")
-            }
+            vkQueueSubmit(graphicsQueue, submitInfo, inFlightFences[currentFrame])
 
             val presentInfo = VkPresentInfoKHR.calloc()
             presentInfo.sType(VK_STRUCTURE_TYPE_PRESENT_INFO_KHR)
@@ -307,7 +337,12 @@ object VulkanStart {
             presentInfo.pSwapchains(swapchains)
             presentInfo.pImageIndices(imageIndex)
 
-            vkQueuePresentKHR(presentQueue, presentInfo)
+            val err2 = vkQueuePresentKHR(presentQueue, presentInfo)
+            when(err2) {
+                VK_SUCCESS -> Unit
+                VK_SUBOPTIMAL_KHR, VK_ERROR_OUT_OF_DATE_KHR -> recreateSwapChain()
+                else -> error("Failed to present swap chain images $err2")
+            }
 
             presentInfo.pResults(null)
 
@@ -315,6 +350,9 @@ object VulkanStart {
         }
     }
 
+    /**
+     * From LWJGL3 Vulkan examples
+     */
     fun translateVulkanResult(result: Int): String {
         when (result) {
         // Success codes
@@ -349,22 +387,14 @@ object VulkanStart {
     }
 
     private fun cleanup() {
+        cleanupSwapchain()
+
         for(i in 0 until MaxFramesInFlight) {
             vkDestroySemaphore(logicalDevice, renderFinishedSemaphores[i], null)
             vkDestroySemaphore(logicalDevice, imageAvailableSemaphores[i], null)
             vkDestroyFence(logicalDevice, inFlightFences[i], null)
         }
         vkDestroyCommandPool(logicalDevice, commandPool, null)
-        for(framebuffer in swapchainFramebuffers) {
-            vkDestroyFramebuffer(logicalDevice, framebuffer, null)
-        }
-        vkDestroyPipeline(logicalDevice, graphicsPipeline, null)
-        vkDestroyPipelineLayout(logicalDevice, pipelineLayout, null)
-        vkDestroyRenderPass(logicalDevice, renderPass, null)
-        for(imageView in swapchainImageViews) {
-            vkDestroyImageView(logicalDevice, imageView, null)
-        }
-        vkDestroySwapchainKHR(logicalDevice, swapchain, null)
         vkDestroyDevice(logicalDevice, null)
         vkDestroySurfaceKHR(vkInstance, surface, null)
 
@@ -777,11 +807,15 @@ object VulkanStart {
             return capabilities.currentExtent()
         }
 
-        val buffer = BufferUtils.createByteBuffer(2*4)
-        buffer.putInt(WIDTH)
-        buffer.putInt(HEIGHT)
-        buffer.flip()
-        val actualExtent = VkExtent2D(buffer)
+        val pWidth = memAllocInt(1)
+        val pHeight = memAllocInt(1)
+        val actualExtent = VkExtent2D.calloc()
+        glfwGetFramebufferSize(windowPointer, pWidth, pHeight)
+
+        actualExtent.set(pWidth[0], pHeight[0])
+
+        memFree(pWidth)
+        memFree(pHeight)
 
         val w = maxOf(capabilities.minImageExtent().width(), minOf(capabilities.maxImageExtent().width(), actualExtent.width()))
         val h = maxOf(capabilities.minImageExtent().height(), minOf(capabilities.maxImageExtent().height(), actualExtent.height()))
