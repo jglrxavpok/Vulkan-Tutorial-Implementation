@@ -48,6 +48,8 @@ object VulkanStart {
     const val nullptr = NULL
     const val UINT64_MAX: Long = -1
 
+    const val MaxFramesInFlight = 2
+
     private var running = true
     private var windowPointer: Long = -1
     const val WIDTH = 800
@@ -74,8 +76,10 @@ object VulkanStart {
     private var renderPass: VkRenderPass = nullptr
     private var graphicsPipeline: VkPipeline = nullptr
     private var commandPool: VkCommandPool = nullptr
-    private var imageAvailableSemaphore: VkSemaphore = nullptr
-    private var renderFinishedSemaphore: VkSemaphore = nullptr
+    private lateinit var imageAvailableSemaphores: Array<VkSemaphore>
+    private lateinit var renderFinishedSemaphores: Array<VkSemaphore>
+    private lateinit var inFlightFences: Array<VkFence>
+    private var callback: Long = nullptr
     private lateinit var swapchainExtent: VkExtent2D
     private lateinit var swapchainImageViews: Array<VkImageView>
     private lateinit var swapchainFramebuffers: Array<VkFramebuffer>
@@ -109,7 +113,7 @@ object VulkanStart {
 
     private fun initVulkan() {
         vkInstance = createVulkanInstance()
-        setupDebugCallback()
+        callback = setupDebugCallback()
         surface = createSurface()
         physicalDevice = pickPhysicalDevice()
         indices = findQueueFamilies(physicalDevice)
@@ -133,22 +137,34 @@ object VulkanStart {
         createFramebuffers()
         createCommandPool()
         createCommandBuffers()
-        createSemaphores()
+        createSyncObjects()
     }
 
-    private fun createSemaphores() {
+    private fun createSyncObjects() {
+        imageAvailableSemaphores = Array<VkSemaphore>(MaxFramesInFlight) { nullptr }
+        renderFinishedSemaphores = Array<VkSemaphore>(MaxFramesInFlight) { nullptr }
+        inFlightFences = Array<VkFence>(MaxFramesInFlight) { nullptr }
+
         val semaphoreInfo = VkSemaphoreCreateInfo.calloc()
         semaphoreInfo.sType(VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO)
+
+        val fenceInfo = VkFenceCreateInfo.calloc()
+        fenceInfo.sType(VK_STRUCTURE_TYPE_FENCE_CREATE_INFO)
+        fenceInfo.flags(VK_FENCE_CREATE_SIGNALED_BIT)
 
         MemoryStack.stackPush().use {
             val pAvailable = it.mallocLong(1)
             val pRender = it.mallocLong(1)
-
-            if(vkCreateSemaphore(logicalDevice, semaphoreInfo, null, pAvailable) != VK_SUCCESS || vkCreateSemaphore(logicalDevice, semaphoreInfo, null, pRender) != VK_SUCCESS)
-                error("Failed to create semaphores")
-
-            imageAvailableSemaphore = pAvailable[0]
-            renderFinishedSemaphore = pRender[0]
+            val pFence = it.mallocLong(1)
+            for(i in 0 until MaxFramesInFlight) {
+                if(vkCreateSemaphore(logicalDevice, semaphoreInfo, null, pAvailable) != VK_SUCCESS
+                    || vkCreateSemaphore(logicalDevice, semaphoreInfo, null, pRender) != VK_SUCCESS
+                    || vkCreateFence(logicalDevice, fenceInfo, null, pFence) != VK_SUCCESS)
+                    error("Failed to create sync objects!")
+                imageAvailableSemaphores[i] = pAvailable[0]
+                renderFinishedSemaphores[i] = pRender[0]
+                inFlightFences[i] = pFence[0]
+            }
         }
     }
 
@@ -235,16 +251,23 @@ object VulkanStart {
     }
 
     private fun run() {
+        var currentFrame = 0
         while(!glfwWindowShouldClose(windowPointer)) {
             glfwPollEvents()
-            drawFrame()
+            drawFrame(currentFrame)
+
+            currentFrame = (currentFrame+1) % MaxFramesInFlight
         }
+
+        vkDeviceWaitIdle(logicalDevice)
     }
 
-    private fun drawFrame() {
+    private fun drawFrame(currentFrame: Int) {
+        vkWaitForFences(logicalDevice, inFlightFences[currentFrame], true, UINT64_MAX)
+        vkResetFences(logicalDevice, inFlightFences[currentFrame])
         MemoryStack.stackPush().use { mem ->
             val imageIndex = mem.mallocInt(1)
-            val err = vkAcquireNextImageKHR(logicalDevice, swapchain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, imageIndex)
+            val err = vkAcquireNextImageKHR(logicalDevice, swapchain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, imageIndex)
             if(err != VK_SUCCESS) {
                 println("!! ${Integer.toHexString(err)} / $err -> ${translateVulkanResult(err)}")
             }
@@ -254,7 +277,7 @@ object VulkanStart {
             val submitInfo = VkSubmitInfo.calloc()
             submitInfo.sType(VK_STRUCTURE_TYPE_SUBMIT_INFO)
 
-            val waitSemaphores = BufferUtils.createLongBuffer(1).put(imageAvailableSemaphore).flip() as LongBuffer
+            val waitSemaphores = BufferUtils.createLongBuffer(1).put(imageAvailableSemaphores[currentFrame]).flip() as LongBuffer
             val waitStages = BufferUtils.createIntBuffer(1).put(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT).flip() as IntBuffer
             submitInfo.pWaitDstStageMask(waitStages)
             submitInfo.pWaitSemaphores(waitSemaphores)
@@ -266,10 +289,10 @@ object VulkanStart {
                     .flip()
             submitInfo.pCommandBuffers(pCommandBuffers)
 
-            val signalSemaphores = BufferUtils.createLongBuffer(1).put(renderFinishedSemaphore).flip() as LongBuffer
+            val signalSemaphores = BufferUtils.createLongBuffer(1).put(renderFinishedSemaphores[currentFrame]).flip() as LongBuffer
             submitInfo.pSignalSemaphores(signalSemaphores)
 
-            val err2 = vkQueueSubmit(graphicsQueue, submitInfo, VK_NULL_HANDLE)
+            val err2 = vkQueueSubmit(graphicsQueue, submitInfo, inFlightFences[currentFrame])
             if(err2 != VK_SUCCESS) {
                 error("Failed to submit draw command buffer ${translateVulkanResult(err2)}")
             }
@@ -289,7 +312,6 @@ object VulkanStart {
             presentInfo.pResults(null)
 
             vkQueueWaitIdle(presentQueue)
-            vkDeviceWaitIdle(logicalDevice)
         }
     }
 
@@ -327,8 +349,11 @@ object VulkanStart {
     }
 
     private fun cleanup() {
-        vkDestroySemaphore(logicalDevice, renderFinishedSemaphore, null)
-        vkDestroySemaphore(logicalDevice, imageAvailableSemaphore, null)
+        for(i in 0 until MaxFramesInFlight) {
+            vkDestroySemaphore(logicalDevice, renderFinishedSemaphores[i], null)
+            vkDestroySemaphore(logicalDevice, imageAvailableSemaphores[i], null)
+            vkDestroyFence(logicalDevice, inFlightFences[i], null)
+        }
         vkDestroyCommandPool(logicalDevice, commandPool, null)
         for(framebuffer in swapchainFramebuffers) {
             vkDestroyFramebuffer(logicalDevice, framebuffer, null)
@@ -342,6 +367,11 @@ object VulkanStart {
         vkDestroySwapchainKHR(logicalDevice, swapchain, null)
         vkDestroyDevice(logicalDevice, null)
         vkDestroySurfaceKHR(vkInstance, surface, null)
+
+        if(enableValidationLayers) {
+            vkDestroyDebugReportCallbackEXT(vkInstance, callback, null)
+        }
+
         vkDestroyInstance(vkInstance, null)
 
         glfwDestroyWindow(windowPointer)
@@ -609,20 +639,22 @@ object VulkanStart {
         return VkInstance(handle, createInfo)
     }
 
-    private fun setupDebugCallback() {
+    private fun setupDebugCallback(): Long {
         if(!enableValidationLayers)
-            return
+            return nullptr
         val createInfo = VkDebugReportCallbackCreateInfoEXT.calloc()
         createInfo.sType(VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT)
         createInfo.flags(VK_DEBUG_REPORT_ERROR_BIT_EXT or VK_DEBUG_REPORT_WARNING_BIT_EXT or VK_DEBUG_REPORT_DEBUG_BIT_EXT)
         createInfo.pfnCallback(DebugCallback)
 
-        val callbackPointer = MemoryStack.stackMallocLong(1)
+        val callbackPointer = memAllocLong(1)
         if(vkCreateDebugReportCallbackEXT(vkInstance, createInfo, null, callbackPointer) != VK_SUCCESS) {
             error("Error while setting up debug callback")
         }
 
-        val callbackHandle = callbackPointer[0]
+        val handle = callbackPointer[0]
+        memFree(callbackPointer)
+        return handle
         //createInfo.free()
     }
 

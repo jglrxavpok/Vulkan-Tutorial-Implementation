@@ -3,6 +3,7 @@ package org.jglrxavpok.vulkan
 typealias VkPresentModeKHR = Int
 typealias VkFormat = Int
 
+typealias VkFence = Long
 typealias VkSemaphore = Long
 typealias VkCommandPool = Long
 typealias VkFramebuffer = Long
