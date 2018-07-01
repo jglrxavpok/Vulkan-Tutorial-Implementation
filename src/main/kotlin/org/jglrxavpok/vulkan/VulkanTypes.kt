@@ -2,7 +2,10 @@ package org.jglrxavpok.vulkan
 
 typealias VkPresentModeKHR = Int
 typealias VkFormat = Int
+typealias VkMemoryPropertiesFlags = Int
 
+typealias VkDeviceMemory = Long
+typealias VkBuffer = Long
 typealias VkFence = Long
 typealias VkSemaphore = Long
 typealias VkCommandPool = Long

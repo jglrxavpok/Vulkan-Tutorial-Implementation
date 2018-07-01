@@ -1,5 +1,6 @@
 package org.jglrxavpok.vulkan
 
+import org.jglrxavpok.vulkan.Vertex.Companion.SizeOfVertex
 import org.joml.Vector2f
 import org.joml.Vector3f
 import org.lwjgl.BufferUtils
@@ -53,7 +54,7 @@ object VulkanStart {
     const val MaxFramesInFlight = 2
 
     private val vertices = arrayOf(
-            Vertex(Vector2f(0.0f, -0.5f), Vector3f(1.0f, 0.0f, 0.0f)),
+            Vertex(Vector2f(0.0f, -0.5f), Vector3f(0.0f, 0.0f, 0.0f)),
             Vertex(Vector2f(0.5f, 0.5f), Vector3f(0.0f, 1.0f, 0.0f)),
             Vertex(Vector2f(-0.5f, 0.5f), Vector3f(0.0f, 0.0f, 1.0f))
     )
@@ -84,6 +85,8 @@ object VulkanStart {
     private var renderPass: VkRenderPass = nullptr
     private var graphicsPipeline: VkPipeline = nullptr
     private var commandPool: VkCommandPool = nullptr
+    private var vertexBuffer: VkBuffer = nullptr
+    private var vertexBufferMemory: VkDeviceMemory = nullptr
     private lateinit var imageAvailableSemaphores: Array<VkSemaphore>
     private lateinit var renderFinishedSemaphores: Array<VkSemaphore>
     private lateinit var inFlightFences: Array<VkFence>
@@ -130,8 +133,73 @@ object VulkanStart {
         presentQueue = createPresentQueue()
 
         createCommandPool()
+        createVertexBuffer()
         prepareSwapchain()
         createSyncObjects()
+    }
+
+    private fun createVertexBuffer() {
+        val bufferInfo = VkBufferCreateInfo.calloc()
+        bufferInfo.sType(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO)
+        bufferInfo.size(SizeOfVertex.toLong() * vertices.size)
+
+        bufferInfo.usage(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
+
+        bufferInfo.sharingMode(VK_SHARING_MODE_EXCLUSIVE)
+
+        val pBuffer = memAllocLong(1)
+
+        if(vkCreateBuffer(logicalDevice, bufferInfo, null, pBuffer) != VK_SUCCESS)
+            error("Error while creating vertex buffer")
+
+        vertexBuffer = pBuffer[0]
+        memFree(pBuffer)
+
+        val memRequirements = VkMemoryRequirements.calloc()
+        vkGetBufferMemoryRequirements(logicalDevice, vertexBuffer, memRequirements)
+
+        val allocInfo = VkMemoryAllocateInfo.calloc()
+        allocInfo.sType(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO)
+        allocInfo.allocationSize(memRequirements.size())
+        allocInfo.memoryTypeIndex(findMemoryType(memRequirements.memoryTypeBits(),
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT or VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+
+        val pMemory = memAllocLong(1)
+        if(vkAllocateMemory(logicalDevice, allocInfo, null, pMemory) != VK_SUCCESS)
+            error("Failed to allocate memory for vertex buffer")
+
+        vertexBufferMemory = pMemory[0]
+        memFree(pMemory)
+        memRequirements.free()
+
+        vkBindBufferMemory(logicalDevice, vertexBuffer, vertexBufferMemory, 0)
+
+        // Filling the vertex buffer
+        val ppData = memAllocPointer(1)
+        vkMapMemory(logicalDevice, vertexBufferMemory, 0, bufferInfo.size(), 0, ppData)
+        val data = ppData[0]
+        val vertexData = memAlloc(SizeOfVertex * 4)
+        Vertex.fillVertexData(vertices, vertexData)
+        vertexData.flip()
+        memCopy(memAddress(vertexData), data, bufferInfo.size())
+        memFree(vertexData)
+        memFree(ppData)
+
+        vkUnmapMemory(logicalDevice, vertexBufferMemory)
+    }
+
+    private fun findMemoryType(typeFilter: Int, properties: VkMemoryPropertiesFlags): Int {
+        val memProperties = VkPhysicalDeviceMemoryProperties.calloc()
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, memProperties)
+
+        // find memory suitable for buffer
+        for(i in 0 until memProperties.memoryTypeCount()) {
+            if(typeFilter and (1 shl i) != 0 && (memProperties.memoryTypes(i).propertyFlags() and properties) == properties) {
+                return i
+            }
+        }
+
+        error("Could not find memory suitable for vertex buffer!")
     }
 
     private fun recreateSwapChain() {
@@ -251,7 +319,12 @@ object VulkanStart {
 
             // drawing commands
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline)
-            vkCmdDraw(commandBuffer, 3, 1, 0, 0) // draw 3 vertices (1 instance)
+
+            val vertexBuffers = memAllocLong(1).put(vertexBuffer).flip() as LongBuffer
+            val offsets = memAllocLong(1).put(0).flip() as LongBuffer
+            vkCmdBindVertexBuffers(commandBuffer, 0, vertexBuffers, offsets)
+
+            vkCmdDraw(commandBuffer, vertices.size, 1, 0, 0) // draw 3 vertices (1 instance)
 
             vkCmdEndRenderPass(commandBuffer)
 
@@ -396,6 +469,9 @@ object VulkanStart {
 
     private fun cleanup() {
         cleanupSwapchain()
+
+        vkDestroyBuffer(logicalDevice, vertexBuffer, null)
+        vkFreeMemory(logicalDevice, vertexBufferMemory, null)
 
         for(i in 0 until MaxFramesInFlight) {
             vkDestroySemaphore(logicalDevice, renderFinishedSemaphores[i], null)

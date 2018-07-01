@@ -5,6 +5,7 @@ import org.joml.Vector3fc
 import org.lwjgl.vulkan.VK10.*
 import org.lwjgl.vulkan.VkVertexInputAttributeDescription
 import org.lwjgl.vulkan.VkVertexInputBindingDescription
+import java.nio.ByteBuffer
 
 data class Vertex(val pos: Vector2fc, val color: Vector3fc) {
 
@@ -35,9 +36,19 @@ data class Vertex(val pos: Vector2fc, val color: Vector3fc) {
                     .binding(0)
                     .location(1)
                     .format(VK_FORMAT_R32G32B32_SFLOAT)
-                    .offset(0)
+                    .offset(2 * 4)
 
             return attributeDescriptions
+        }
+
+        fun fillVertexData(vertices: Array<Vertex>, vertexData: ByteBuffer) {
+            val data = vertexData.asFloatBuffer()
+            for(vertex in vertices) {
+                vertex.pos.get(data)
+                data.position(data.position()+2)
+                vertex.color.get(data)
+                data.position(data.position()+3)
+            }
         }
     }
 }
