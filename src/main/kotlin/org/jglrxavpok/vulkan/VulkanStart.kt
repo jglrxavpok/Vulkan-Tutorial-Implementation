@@ -1,5 +1,7 @@
 package org.jglrxavpok.vulkan
 
+import org.joml.Vector2f
+import org.joml.Vector3f
 import org.lwjgl.BufferUtils
 import org.lwjgl.PointerBuffer
 import org.lwjgl.glfw.GLFW.*
@@ -49,6 +51,12 @@ object VulkanStart {
     const val UINT64_MAX: Long = -1
 
     const val MaxFramesInFlight = 2
+
+    private val vertices = arrayOf(
+            Vertex(Vector2f(0.0f, -0.5f), Vector3f(1.0f, 0.0f, 0.0f)),
+            Vertex(Vector2f(0.5f, 0.5f), Vector3f(0.0f, 1.0f, 0.0f)),
+            Vertex(Vector2f(-0.5f, 0.5f), Vector3f(0.0f, 0.0f, 1.0f))
+    )
 
     private var running = true
     private var windowPointer: Long = -1
@@ -503,6 +511,11 @@ object VulkanStart {
 
         val vertexInputInfo = VkPipelineVertexInputStateCreateInfo.calloc()
         vertexInputInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO)
+
+        val bindingDescription = Vertex.createBindingDescriptions()
+        val attributeDescriptions = Vertex.createAttributeDescriptions()
+        vertexInputInfo.pVertexBindingDescriptions(bindingDescription)
+        vertexInputInfo.pVertexAttributeDescriptions(attributeDescriptions)
 
         val inputAssembly = VkPipelineInputAssemblyStateCreateInfo.calloc()
         inputAssembly.sType(VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO)
