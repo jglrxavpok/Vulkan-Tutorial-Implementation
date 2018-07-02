@@ -138,54 +138,118 @@ object VulkanStart {
         createSyncObjects()
     }
 
-    private fun createVertexBuffer() {
+    private fun createBuffer(size: Long, usage: Int, properties: VkMemoryPropertiesFlags, pBuffer: VkPointer<VkBuffer>, pBufferMemory: VkPointer<VkDeviceMemory>) {
         val bufferInfo = VkBufferCreateInfo.calloc()
         bufferInfo.sType(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO)
-        bufferInfo.size(SizeOfVertex.toLong() * vertices.size)
+        bufferInfo.size(size)
 
-        bufferInfo.usage(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)
+        bufferInfo.usage(usage)
 
         bufferInfo.sharingMode(VK_SHARING_MODE_EXCLUSIVE)
-
-        val pBuffer = memAllocLong(1)
 
         if(vkCreateBuffer(logicalDevice, bufferInfo, null, pBuffer) != VK_SUCCESS)
             error("Error while creating vertex buffer")
 
-        vertexBuffer = pBuffer[0]
-        memFree(pBuffer)
-
         val memRequirements = VkMemoryRequirements.calloc()
-        vkGetBufferMemoryRequirements(logicalDevice, vertexBuffer, memRequirements)
+        vkGetBufferMemoryRequirements(logicalDevice, !pBuffer, memRequirements)
 
         val allocInfo = VkMemoryAllocateInfo.calloc()
         allocInfo.sType(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO)
         allocInfo.allocationSize(memRequirements.size())
         allocInfo.memoryTypeIndex(findMemoryType(memRequirements.memoryTypeBits(),
-                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT or VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+                properties))
 
-        val pMemory = memAllocLong(1)
-        if(vkAllocateMemory(logicalDevice, allocInfo, null, pMemory) != VK_SUCCESS)
-            error("Failed to allocate memory for vertex buffer")
-
-        vertexBufferMemory = pMemory[0]
-        memFree(pMemory)
         memRequirements.free()
 
-        vkBindBufferMemory(logicalDevice, vertexBuffer, vertexBufferMemory, 0)
+        if(vkAllocateMemory(logicalDevice, allocInfo, null, pBufferMemory) != VK_SUCCESS)
+            error("Failed to allocate memory for buffer")
+
+        vkBindBufferMemory(logicalDevice, !pBuffer, !pBufferMemory, 0)
+    }
+
+    private fun createVertexBuffer() {
+        val bufferSize = vertices.size * SizeOfVertex
+        val pBuffer: VkPointer<VkBuffer> = memAllocLong(1)
+        val pMemory: VkPointer<VkDeviceMemory> = memAllocLong(1)
+        createBuffer(bufferSize.toLong(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, pBuffer, pMemory)
+
 
         // Filling the vertex buffer
         val ppData = memAllocPointer(1)
-        vkMapMemory(logicalDevice, vertexBufferMemory, 0, bufferInfo.size(), 0, ppData)
-        val data = ppData[0]
+        vkMapMemory(logicalDevice, !pMemory, 0, bufferSize.toLong(), 0, ppData)
+        val data = !ppData
         val vertexData = memAlloc(SizeOfVertex * 4)
         Vertex.fillVertexData(vertices, vertexData)
         vertexData.flip()
-        memCopy(memAddress(vertexData), data, bufferInfo.size())
+        memCopy(memAddress(vertexData), data, bufferSize.toLong())
         memFree(vertexData)
         memFree(ppData)
 
-        vkUnmapMemory(logicalDevice, vertexBufferMemory)
+        vkUnmapMemory(logicalDevice, !pMemory)
+
+
+        // overwrite """pointer buffers""" with the (actual) vertex buffer
+        val stagingBuffer = !pBuffer
+        val stagingBufferMemory = !pMemory
+        createBuffer(bufferSize.toLong(), VK_BUFFER_USAGE_TRANSFER_DST_BIT or VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, pBuffer, pMemory)
+
+        vertexBuffer = !pBuffer
+        vertexBufferMemory = !pMemory
+
+        copyBuffer(stagingBuffer, vertexBuffer, bufferSize.toLong())
+
+        memFree(pBuffer)
+        memFree(pMemory)
+
+        vkDestroyBuffer(logicalDevice, stagingBuffer, null)
+        vkFreeMemory(logicalDevice, stagingBufferMemory, null)
+    }
+
+    private fun copyBuffer(srcBuffer: VkBuffer, dstBuffer: VkBuffer, size: Long) {
+        // We create a temporary command buffer to copy the data
+        val allocInfo = VkCommandBufferAllocateInfo.calloc()
+        allocInfo.sType(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)
+        allocInfo.level(VK_COMMAND_BUFFER_LEVEL_PRIMARY)
+        allocInfo.commandPool(commandPool)
+        allocInfo.commandBufferCount(1)
+
+        val pCommandBuffer = memAllocPointer(1)
+        vkAllocateCommandBuffers(logicalDevice, allocInfo, pCommandBuffer)
+        val commandBuffer = VkCommandBuffer(!pCommandBuffer, logicalDevice)
+
+        // immediatly record this command buffer
+        val beginInfo = VkCommandBufferBeginInfo.calloc()
+        beginInfo.sType(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO)
+        beginInfo.flags(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT)
+
+        vkBeginCommandBuffer(commandBuffer, beginInfo)
+
+        val copyRegion = VkBufferCopy.calloc(1)
+        copyRegion.srcOffset(0)
+        copyRegion.dstOffset(0)
+        copyRegion.size(size)
+
+        vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, copyRegion)
+
+        vkEndCommandBuffer(commandBuffer)
+
+        // submit directly
+        val submitInfo = VkSubmitInfo.calloc(1)
+        submitInfo.sType(VK_STRUCTURE_TYPE_SUBMIT_INFO)
+        val pCommandBuffers = memAllocPointer(1).put(commandBuffer).flip()
+        submitInfo.pCommandBuffers(pCommandBuffers)
+
+        vkQueueSubmit(graphicsQueue, submitInfo, VK_NULL_HANDLE)
+        vkQueueWaitIdle(graphicsQueue) // wait for transfer to complete
+
+        vkFreeCommandBuffers(logicalDevice, commandPool, commandBuffer)
+
+
+        pCommandBuffers.free()
+        beginInfo.free()
+        copyRegion.free()
+        pCommandBuffer.free()
+        allocInfo.free()
     }
 
     private fun findMemoryType(typeFilter: Int, properties: VkMemoryPropertiesFlags): Int {
