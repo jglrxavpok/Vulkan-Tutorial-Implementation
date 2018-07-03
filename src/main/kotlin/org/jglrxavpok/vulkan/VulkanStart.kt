@@ -1,6 +1,7 @@
 package org.jglrxavpok.vulkan
 
 import org.jglrxavpok.vulkan.Vertex.Companion.SizeOfVertex
+import org.joml.Math
 import org.joml.Vector2f
 import org.joml.Vector3f
 import org.lwjgl.BufferUtils
@@ -94,6 +95,9 @@ object VulkanStart {
     private var vertexBufferMemory: VkDeviceMemory = nullptr
     private var indexBuffer: VkBuffer = nullptr
     private var indexBufferMemory: VkDeviceMemory = nullptr
+    private var descriptorSetLayout: VkDescriptorSetLayout = nullptr
+    private lateinit var uniformBuffers: Array<VkBuffer>
+    private lateinit var uniformBuffersMemory: Array<VkDeviceMemory>
     private lateinit var imageAvailableSemaphores: Array<VkSemaphore>
     private lateinit var renderFinishedSemaphores: Array<VkSemaphore>
     private lateinit var inFlightFences: Array<VkFence>
@@ -102,7 +106,6 @@ object VulkanStart {
     private lateinit var swapchainImageViews: Array<VkImageView>
     private lateinit var swapchainFramebuffers: Array<VkFramebuffer>
     private lateinit var commandBuffers: Array<VkCommandBuffer>
-
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -142,8 +145,24 @@ object VulkanStart {
         createCommandPool()
         createVertexBuffer()
         createIndexBuffer()
+        createUniformBuffers()
         prepareSwapchain()
         createSyncObjects()
+    }
+
+    private fun createUniformBuffers() {
+        val bufferSize = UniformBufferObject.SizeOfUniformBufferObject.toLong()
+        uniformBuffers = Array<VkBuffer>(swapchainImages.size) { nullptr }
+        uniformBuffersMemory = Array<VkDeviceMemory>(swapchainImages.size) { nullptr }
+        val pBuffer = memAllocLong(1)
+        val pMemory = memAllocLong(1)
+        for(i in 0 until swapchainImages.size) {
+            createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, pBuffer, pMemory)
+            uniformBuffers[i] = !pBuffer
+            uniformBuffersMemory[i] = !pMemory
+        }
+        memFree(pBuffer)
+        memFree(pMemory)
     }
 
     private fun createBuffer(size: Long, usage: Int, properties: VkMemoryPropertiesFlags, pBuffer: VkPointer<VkBuffer>, pBufferMemory: VkPointer<VkDeviceMemory>) {
@@ -328,9 +347,31 @@ object VulkanStart {
         swapchainImageViews = createImageViews()
 
         createRenderPass()
+        createDescriptorSetLayout()
         createGraphicsPipeline()
         createFramebuffers()
         createCommandBuffers()
+    }
+
+    private fun createDescriptorSetLayout() {
+        val uboLayoutBinding = VkDescriptorSetLayoutBinding.calloc(1)
+        uboLayoutBinding.binding(0)
+        uboLayoutBinding.descriptorCount(1)
+        uboLayoutBinding.descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+
+        uboLayoutBinding.stageFlags(VK_SHADER_STAGE_VERTEX_BIT)
+
+        val layoutInfo = VkDescriptorSetLayoutCreateInfo.calloc()
+        layoutInfo.sType(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO)
+        layoutInfo.pBindings(uboLayoutBinding)
+
+        val pBinding: VkPointer<VkDescriptorSetLayout> = memAllocLong(1)
+        if(vkCreateDescriptorSetLayout(logicalDevice, layoutInfo, null, pBinding) != VK_SUCCESS) {
+            error("failed to create descriptor set layout")
+        }
+
+        descriptorSetLayout = !pBinding
+        memFree(pBinding)
     }
 
     private fun cleanupSwapchain() {
@@ -495,6 +536,8 @@ object VulkanStart {
 
             imageIndex.rewind()
 
+            updateUniformBuffer(currentFrame)
+
             val submitInfo = VkSubmitInfo.calloc()
             submitInfo.sType(VK_STRUCTURE_TYPE_SUBMIT_INFO)
 
@@ -538,6 +581,43 @@ object VulkanStart {
         }
     }
 
+    private fun updateUniformBuffer(currentFrame: Int) {
+        val startTime by lazy { System.currentTimeMillis() }
+        val ubo by lazy { UniformBufferObject() }
+        val upAxis by lazy { Vector3f(0f, 0f, 1f) }
+
+        val currentTime = System.currentTimeMillis()
+        val time = currentTime- startTime
+
+        val angle = time / 1000f * Math.PI/2f // 90 degrees per second
+        ubo.model.identity().rotate(angle.toFloat(), upAxis)
+
+        val eyePos by lazy { Vector3f(2f) }
+        val centerPos by lazy { Vector3f(0f) }
+
+        ubo.view.setLookAt(eyePos, centerPos, upAxis)
+
+        ubo.proj.setPerspective(45f * Math.PI.toFloat() / 180f,
+                swapchainExtent.width().toFloat() / swapchainExtent.height().toFloat(),
+                0.1f, 10f)
+        ubo.proj.m11(ubo.proj.m11()* (-1f)) // invert Y Axis
+
+        val ppData = memAllocPointer(1)
+        vkMapMemory(logicalDevice, uniformBuffersMemory[currentFrame], 0, UniformBufferObject.SizeOfUniformBufferObject.toLong(), 0, ppData)
+        val data = !ppData
+
+        val uboData = memAlloc(UniformBufferObject.SizeOfUniformBufferObject)
+        ubo.putIn(uboData)
+        uboData.flip()
+        memCopy(memAddress(uboData), data, UniformBufferObject.SizeOfUniformBufferObject.toLong())
+
+        vkUnmapMemory(logicalDevice, uniformBuffersMemory[currentFrame])
+
+        memFree(uboData)
+
+        memFree(ppData)
+    }
+
     /**
      * From LWJGL3 Vulkan examples
      */
@@ -576,6 +656,13 @@ object VulkanStart {
 
     private fun cleanup() {
         cleanupSwapchain()
+
+        for((index, buffer) in uniformBuffers.withIndex()) {
+            vkDestroyBuffer(logicalDevice, buffer, null)
+            vkFreeMemory(logicalDevice, uniformBuffersMemory[index], null)
+        }
+
+        vkDestroyDescriptorSetLayout(logicalDevice, descriptorSetLayout, null)
 
         vkDestroyBuffer(logicalDevice, indexBuffer, null)
         vkFreeMemory(logicalDevice, indexBufferMemory, null)
@@ -768,6 +855,8 @@ object VulkanStart {
 
         val pipelineLayoutInfo = VkPipelineLayoutCreateInfo.calloc()
         pipelineLayoutInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO)
+        val pLayouts = memAllocLong(1).put(descriptorSetLayout).flip() as LongBuffer
+        pipelineLayoutInfo.pSetLayouts(pLayouts)
 
         pipelineLayout = MemoryStack.stackPush().use {
             val pLayout = it.mallocLong(1)
@@ -775,6 +864,8 @@ object VulkanStart {
                 error("Failed to create pipeline layout")
             pLayout[0]
         }
+
+        memFree(pLayouts)
 
         val pipelineInfo = VkGraphicsPipelineCreateInfo.calloc(1)
         pipelineInfo.sType(VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO)

@@ -8,6 +8,8 @@ typealias VkFormat = Int
 typealias VkMemoryPropertiesFlags = Int
 
 typealias VkPointer<T> = LongBuffer
+
+typealias VkDescriptorSetLayout = Long
 typealias VkDeviceMemory = Long
 typealias VkBuffer = Long
 typealias VkFence = Long
