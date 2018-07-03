@@ -96,6 +96,7 @@ object VulkanStart {
     private var indexBuffer: VkBuffer = nullptr
     private var indexBufferMemory: VkDeviceMemory = nullptr
     private var descriptorSetLayout: VkDescriptorSetLayout = nullptr
+    private var descriptorPool: VkDescriptorPool = nullptr
     private lateinit var uniformBuffers: Array<VkBuffer>
     private lateinit var uniformBuffersMemory: Array<VkDeviceMemory>
     private lateinit var imageAvailableSemaphores: Array<VkSemaphore>
@@ -106,6 +107,7 @@ object VulkanStart {
     private lateinit var swapchainImageViews: Array<VkImageView>
     private lateinit var swapchainFramebuffers: Array<VkFramebuffer>
     private lateinit var commandBuffers: Array<VkCommandBuffer>
+    private lateinit var descriptorSets: Array<VkDescriptorSet>
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -139,15 +141,81 @@ object VulkanStart {
         physicalDevice = pickPhysicalDevice()
         queueIndices = findQueueFamilies(physicalDevice)
         logicalDevice = createLogicalDevice()
+
         graphicsQueue = createGraphicsQueue()
         presentQueue = createPresentQueue()
 
+        prepareSwapchain(createCommandBuffers = false)
         createCommandPool()
         createVertexBuffer()
         createIndexBuffer()
         createUniformBuffers()
-        prepareSwapchain()
+        createDescriptorPool()
+        createDescriptorSets()
+        createCommandBuffers()
         createSyncObjects()
+    }
+
+    private fun createDescriptorSets() {
+        val layouts = memAllocLong(swapchainImages.size)
+        repeat(swapchainImages.size) {
+            layouts.put(descriptorSetLayout)
+        }
+        layouts.flip()
+        val allocInfo = VkDescriptorSetAllocateInfo.calloc()
+        allocInfo.sType(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO)
+        allocInfo.descriptorPool(descriptorPool)
+        allocInfo.pSetLayouts(layouts)
+
+        val pSets = memAllocLong(swapchainImages.size)
+        if(vkAllocateDescriptorSets(logicalDevice, allocInfo, pSets) != VK_SUCCESS) {
+            error("Failed to allocate descriptor sets")
+        }
+        descriptorSets = Array<VkDescriptorSet>(swapchainImages.size) { i -> pSets[i] }
+
+        memFree(pSets)
+
+        // populate descriptors
+        val descriptorWrites = VkWriteDescriptorSet.calloc(descriptorSets.size)
+        for(i in 0 until descriptorSets.size) {
+            val bufferInfo = VkDescriptorBufferInfo.calloc(1)
+            bufferInfo.buffer(uniformBuffers[i])
+            bufferInfo.offset(0)
+            bufferInfo.range(UniformBufferObject.SizeOfUniformBufferObject.toLong())
+
+            val descriptorWrite = descriptorWrites[i]
+            descriptorWrite.sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET)
+            descriptorWrite.dstSet(descriptorSets[i])
+            descriptorWrite.dstBinding(0)
+            descriptorWrite.dstArrayElement(0)
+
+            descriptorWrite.descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+
+            descriptorWrite.pBufferInfo(bufferInfo)
+        }
+
+        vkUpdateDescriptorSets(logicalDevice, descriptorWrites, null) // contrary to the tutorial, we send the whole batch at once
+    }
+
+    private fun createDescriptorPool() {
+        val poolSize = VkDescriptorPoolSize.calloc(1)
+        poolSize.descriptorCount(swapchainImages.size)
+        poolSize.type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+
+        val poolInfo = VkDescriptorPoolCreateInfo.calloc()
+        poolInfo.sType(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO)
+        poolInfo.pPoolSizes(poolSize)
+        poolInfo.maxSets(swapchainImages.size)
+
+        val pPool = memAllocLong(1)
+
+        if(vkCreateDescriptorPool(logicalDevice, poolInfo, null, pPool) != VK_SUCCESS) {
+            error("Could not create descriptor pool")
+        }
+
+        descriptorPool = !pPool
+
+        memFree(pPool)
     }
 
     private fun createUniformBuffers() {
@@ -331,10 +399,10 @@ object VulkanStart {
         vkDeviceWaitIdle(logicalDevice)
         cleanupSwapchain()
 
-        prepareSwapchain()
+        prepareSwapchain(true)
     }
 
-    private fun prepareSwapchain() {
+    private fun prepareSwapchain(createCommandBuffers: Boolean) {
         swapchainDetails = querySwapChainSupport(physicalDevice)
         swapchainFormat = chooseSwapSurfaceFormat(swapchainDetails.formats)
         swapchainImageFormat = swapchainFormat.format()
@@ -350,7 +418,9 @@ object VulkanStart {
         createDescriptorSetLayout()
         createGraphicsPipeline()
         createFramebuffers()
-        createCommandBuffers()
+
+        if(createCommandBuffers)
+            createCommandBuffers()
     }
 
     private fun createDescriptorSetLayout() {
@@ -472,6 +542,10 @@ object VulkanStart {
             vkCmdBindVertexBuffers(commandBuffer, 0, vertexBuffers, offsets)
             vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32)
 
+            val pSets = memAllocLong(1).put(descriptorSets[index]).flip() as LongBuffer
+            vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, pSets, null)
+            memFree(pSets)
+
             vkCmdDrawIndexed(commandBuffer, indices.capacity(), 1, 0, 0, 0) // draw 3 vertices (1 instance)
 
             vkCmdEndRenderPass(commandBuffer)
@@ -587,7 +661,7 @@ object VulkanStart {
         val upAxis by lazy { Vector3f(0f, 0f, 1f) }
 
         val currentTime = System.currentTimeMillis()
-        val time = currentTime- startTime
+        val time = currentTime - startTime
 
         val angle = time / 1000f * Math.PI/2f // 90 degrees per second
         ubo.model.identity().rotate(angle.toFloat(), upAxis)
@@ -656,6 +730,8 @@ object VulkanStart {
 
     private fun cleanup() {
         cleanupSwapchain()
+
+        vkDestroyDescriptorPool(logicalDevice, descriptorPool, null)
 
         for((index, buffer) in uniformBuffers.withIndex()) {
             vkDestroyBuffer(logicalDevice, buffer, null)
@@ -822,7 +898,7 @@ object VulkanStart {
         rasterizer.polygonMode(VK_POLYGON_MODE_FILL)
         rasterizer.lineWidth(1f)
         rasterizer.cullMode(VK_CULL_MODE_BACK_BIT)
-        rasterizer.frontFace(VK_FRONT_FACE_CLOCKWISE)
+        rasterizer.frontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE)
         rasterizer.depthBiasEnable(false)
 
         // Multisampling
