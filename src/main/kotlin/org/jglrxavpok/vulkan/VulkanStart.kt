@@ -54,10 +54,15 @@ object VulkanStart {
     const val MaxFramesInFlight = 2
 
     private val vertices = arrayOf(
-            Vertex(Vector2f(0.0f, -0.5f), Vector3f(0.0f, 0.0f, 0.0f)),
-            Vertex(Vector2f(0.5f, 0.5f), Vector3f(0.0f, 1.0f, 0.0f)),
-            Vertex(Vector2f(-0.5f, 0.5f), Vector3f(0.0f, 0.0f, 1.0f))
+            Vertex(Vector2f(-0.5f, -0.5f), Vector3f(1.0f, 0.0f, 0.0f)),
+            Vertex(Vector2f(0.5f, -0.5f), Vector3f(0.0f, 1.0f, 0.0f)),
+            Vertex(Vector2f(0.5f, 0.5f), Vector3f(0.0f, 0.0f, 1.0f)),
+            Vertex(Vector2f(-0.5f, 0.5f), Vector3f(1.0f, 1.0f, 1.0f))
     )
+
+    private val indices = memAllocInt(6)
+            .put(0).put(1).put(2).put(2).put(3).put(0)
+            .flip() as IntBuffer
 
     private var running = true
     private var windowPointer: Long = -1
@@ -73,7 +78,7 @@ object VulkanStart {
     private lateinit var logicalDevice: VkDevice
     private lateinit var graphicsQueue: VkQueue
     private lateinit var presentQueue: VkQueue
-    private lateinit var indices: QueueFamilyIndices
+    private lateinit var queueIndices: QueueFamilyIndices
     private var swapchain: VkSwapchainKHR = nullptr
     private var surface: VkSurfaceKHR = nullptr
     private lateinit var swapchainImages: Array<VkImage>
@@ -87,6 +92,8 @@ object VulkanStart {
     private var commandPool: VkCommandPool = nullptr
     private var vertexBuffer: VkBuffer = nullptr
     private var vertexBufferMemory: VkDeviceMemory = nullptr
+    private var indexBuffer: VkBuffer = nullptr
+    private var indexBufferMemory: VkDeviceMemory = nullptr
     private lateinit var imageAvailableSemaphores: Array<VkSemaphore>
     private lateinit var renderFinishedSemaphores: Array<VkSemaphore>
     private lateinit var inFlightFences: Array<VkFence>
@@ -127,13 +134,14 @@ object VulkanStart {
         callback = setupDebugCallback()
         surface = createSurface()
         physicalDevice = pickPhysicalDevice()
-        indices = findQueueFamilies(physicalDevice)
+        queueIndices = findQueueFamilies(physicalDevice)
         logicalDevice = createLogicalDevice()
         graphicsQueue = createGraphicsQueue()
         presentQueue = createPresentQueue()
 
         createCommandPool()
         createVertexBuffer()
+        createIndexBuffer()
         prepareSwapchain()
         createSyncObjects()
     }
@@ -197,6 +205,40 @@ object VulkanStart {
         vertexBufferMemory = !pMemory
 
         copyBuffer(stagingBuffer, vertexBuffer, bufferSize.toLong())
+
+        memFree(pBuffer)
+        memFree(pMemory)
+
+        vkDestroyBuffer(logicalDevice, stagingBuffer, null)
+        vkFreeMemory(logicalDevice, stagingBufferMemory, null)
+    }
+
+    private fun createIndexBuffer() {
+        val bufferSize = indices.capacity() * 4
+        val pBuffer: VkPointer<VkBuffer> = memAllocLong(1)
+        val pMemory: VkPointer<VkDeviceMemory> = memAllocLong(1)
+        createBuffer(bufferSize.toLong(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, pBuffer, pMemory)
+
+
+        // Filling the vertex buffer
+        val ppData = memAllocPointer(1)
+        vkMapMemory(logicalDevice, !pMemory, 0, bufferSize.toLong(), 0, ppData)
+        val data = !ppData
+        memCopy(memAddress(indices), data, bufferSize.toLong())
+        memFree(ppData)
+
+        vkUnmapMemory(logicalDevice, !pMemory)
+
+
+        // overwrite """pointer buffers""" with the (actual) vertex buffer
+        val stagingBuffer = !pBuffer
+        val stagingBufferMemory = !pMemory
+        createBuffer(bufferSize.toLong(), VK_BUFFER_USAGE_TRANSFER_DST_BIT or VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, pBuffer, pMemory)
+
+        indexBuffer = !pBuffer
+        indexBufferMemory = !pMemory
+
+        copyBuffer(stagingBuffer, indexBuffer, bufferSize.toLong())
 
         memFree(pBuffer)
         memFree(pMemory)
@@ -387,8 +429,9 @@ object VulkanStart {
             val vertexBuffers = memAllocLong(1).put(vertexBuffer).flip() as LongBuffer
             val offsets = memAllocLong(1).put(0).flip() as LongBuffer
             vkCmdBindVertexBuffers(commandBuffer, 0, vertexBuffers, offsets)
+            vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT32)
 
-            vkCmdDraw(commandBuffer, vertices.size, 1, 0, 0) // draw 3 vertices (1 instance)
+            vkCmdDrawIndexed(commandBuffer, indices.capacity(), 1, 0, 0, 0) // draw 3 vertices (1 instance)
 
             vkCmdEndRenderPass(commandBuffer)
 
@@ -534,6 +577,8 @@ object VulkanStart {
     private fun cleanup() {
         cleanupSwapchain()
 
+        vkDestroyBuffer(logicalDevice, indexBuffer, null)
+        vkFreeMemory(logicalDevice, indexBufferMemory, null)
         vkDestroyBuffer(logicalDevice, vertexBuffer, null)
         vkFreeMemory(logicalDevice, vertexBufferMemory, null)
 
@@ -1090,7 +1135,7 @@ object VulkanStart {
 
     private fun createLogicalDevice(): VkDevice {
         val queueCreateInfo = VkDeviceQueueCreateInfo.calloc(2)
-        val uniqueQueueFamilies = arrayOf(indices.graphicsFamily, indices.presentFamily)
+        val uniqueQueueFamilies = arrayOf(queueIndices.graphicsFamily, queueIndices.presentFamily)
         for((index, queueFamily) in uniqueQueueFamilies.withIndex()) {
             val info = queueCreateInfo[index]
             info.sType(VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO)
@@ -1130,9 +1175,9 @@ object VulkanStart {
         return VkDevice(handle, physicalDevice, createInfo)
     }
 
-    private fun createGraphicsQueue() = createQueue(indices.graphicsFamily)
+    private fun createGraphicsQueue() = createQueue(queueIndices.graphicsFamily)
 
-    private fun createPresentQueue() = createQueue(indices.presentFamily)
+    private fun createPresentQueue() = createQueue(queueIndices.presentFamily)
 
     private fun createQueue(index: Int): VkQueue {
         val handle = MemoryStack.stackPush().use {
