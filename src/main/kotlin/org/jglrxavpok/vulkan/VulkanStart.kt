@@ -610,7 +610,7 @@ object VulkanStart {
 
             imageIndex.rewind()
 
-            updateUniformBuffer(currentFrame)
+            updateUniformBuffer(imageIndex[0])
 
             val submitInfo = VkSubmitInfo.calloc()
             submitInfo.sType(VK_STRUCTURE_TYPE_SUBMIT_INFO)
