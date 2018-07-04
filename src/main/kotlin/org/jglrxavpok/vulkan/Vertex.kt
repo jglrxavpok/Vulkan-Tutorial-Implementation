@@ -7,12 +7,12 @@ import org.lwjgl.vulkan.VkVertexInputAttributeDescription
 import org.lwjgl.vulkan.VkVertexInputBindingDescription
 import java.nio.ByteBuffer
 
-data class Vertex(val pos: Vector2fc, val color: Vector3fc) {
+data class Vertex(val pos: Vector2fc, val color: Vector3fc, val texCoords: Vector2fc) {
 
 
     companion object {
 
-        const val SizeOfVertex = (3+2) * 4 // component count * sizeof(float32)
+        const val SizeOfVertex = (3+2+2) * 4 // component count * sizeof(float32)
 
         fun createBindingDescriptions(): VkVertexInputBindingDescription.Buffer {
             val bindingDescription = VkVertexInputBindingDescription.calloc(1)
@@ -24,7 +24,7 @@ data class Vertex(val pos: Vector2fc, val color: Vector3fc) {
         }
 
         fun createAttributeDescriptions(): VkVertexInputAttributeDescription.Buffer {
-            val attributeDescriptions = VkVertexInputAttributeDescription.calloc(2)
+            val attributeDescriptions = VkVertexInputAttributeDescription.calloc(3)
 
             attributeDescriptions[0]
                     .binding(0)
@@ -38,6 +38,12 @@ data class Vertex(val pos: Vector2fc, val color: Vector3fc) {
                     .format(VK_FORMAT_R32G32B32_SFLOAT)
                     .offset(2 * 4)
 
+            attributeDescriptions[2]
+                    .binding(0)
+                    .location(2)
+                    .format(VK_FORMAT_R32G32_SFLOAT)
+                    .offset((2+3) * 4)
+
             return attributeDescriptions
         }
 
@@ -48,6 +54,8 @@ data class Vertex(val pos: Vector2fc, val color: Vector3fc) {
                 data.position(data.position()+2)
                 vertex.color.get(data)
                 data.position(data.position()+3)
+                vertex.texCoords.get(data)
+                data.position(data.position()+2)
             }
         }
     }

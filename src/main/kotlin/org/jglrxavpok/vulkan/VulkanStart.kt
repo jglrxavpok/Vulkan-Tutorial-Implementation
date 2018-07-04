@@ -56,10 +56,10 @@ object VulkanStart {
     const val MaxFramesInFlight = 2
 
     private val vertices = arrayOf(
-            Vertex(Vector2f(-0.5f, -0.5f), Vector3f(1.0f, 0.0f, 0.0f)),
-            Vertex(Vector2f(0.5f, -0.5f), Vector3f(0.0f, 1.0f, 0.0f)),
-            Vertex(Vector2f(0.5f, 0.5f), Vector3f(0.0f, 0.0f, 1.0f)),
-            Vertex(Vector2f(-0.5f, 0.5f), Vector3f(1.0f, 1.0f, 1.0f))
+            Vertex(Vector2f(-0.5f, -0.5f), Vector3f(1.0f, 0.0f, 0.0f), Vector2f(1.0f, 0.0f)),
+            Vertex(Vector2f(0.5f, -0.5f), Vector3f(0.0f, 1.0f, 0.0f), Vector2f(0.0f, 0.0f)),
+            Vertex(Vector2f(0.5f, 0.5f), Vector3f(0.0f, 0.0f, 1.0f), Vector2f(0.0f, 1.0f)),
+            Vertex(Vector2f(-0.5f, 0.5f), Vector3f(1.0f, 1.0f, 1.0f), Vector2f(1.0f, 1.0f))
     )
 
     private val indices = memAllocInt(6)
@@ -113,6 +113,10 @@ object VulkanStart {
     private lateinit var swapchainFramebuffers: Array<VkFramebuffer>
     private lateinit var commandBuffers: Array<VkCommandBuffer>
     private lateinit var descriptorSets: Array<VkDescriptorSet>
+
+    val startTime = System.currentTimeMillis()
+    val ubo = UniformBufferObject()
+    val upAxis = Vector3f(0f, 0f, 1f)
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -211,7 +215,15 @@ object VulkanStart {
 
         val stagingBuffer: VkBuffer = !pStagingBuffer
         val stagingBufferMemory: VkDeviceMemory = !pStagingMemory
-        val pixelData = memAllocInt(pixels.size).put(pixels).flip() as IntBuffer
+        val pixelData = memAllocInt(pixels.size)
+        for(pixel in pixels) { // convert from RGB to BGR
+            val red = (pixel shr 16) and 0xFF
+            val green = (pixel shr 8) and 0xFF
+            val blue = (pixel shr 0) and 0xFF
+            val finalColor = (blue shl 16) or (green shl 8) or red
+            pixelData.put(finalColor)
+        }
+        pixelData.flip()
         val pData = memAllocPointer(1)
         vkMapMemory(logicalDevice, stagingBufferMemory, 0, imageSize, 0, pData)
 
@@ -381,35 +393,55 @@ object VulkanStart {
         memFree(pSets)
 
         // populate descriptors
-        val descriptorWrites = VkWriteDescriptorSet.calloc(descriptorSets.size)
+        val descriptorWrites = VkWriteDescriptorSet.calloc(descriptorSets.size*2)
         for(i in 0 until descriptorSets.size) {
             val bufferInfo = VkDescriptorBufferInfo.calloc(1)
             bufferInfo.buffer(uniformBuffers[i])
             bufferInfo.offset(0)
             bufferInfo.range(UniformBufferObject.SizeOfUniformBufferObject.toLong())
 
-            val descriptorWrite = descriptorWrites[i]
-            descriptorWrite.sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET)
-            descriptorWrite.dstSet(descriptorSets[i])
-            descriptorWrite.dstBinding(0)
-            descriptorWrite.dstArrayElement(0)
+            val uniformDescriptorWrite = descriptorWrites[i*2]
+            uniformDescriptorWrite.sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET)
+            uniformDescriptorWrite.dstSet(descriptorSets[i])
+            uniformDescriptorWrite.dstBinding(0)
+            uniformDescriptorWrite.dstArrayElement(0)
 
-            descriptorWrite.descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+            uniformDescriptorWrite.descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
 
-            descriptorWrite.pBufferInfo(bufferInfo)
+            uniformDescriptorWrite.pBufferInfo(bufferInfo)
+
+            val samplerInfo = VkDescriptorImageInfo.calloc(1)
+            samplerInfo.sampler(textureSampler)
+            samplerInfo.imageView(textureImageView)
+            samplerInfo.imageLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+
+            val samplerDescriptorWrite = descriptorWrites[i*2+1]
+            samplerDescriptorWrite.sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET)
+            samplerDescriptorWrite.dstSet(descriptorSets[i])
+            samplerDescriptorWrite.dstBinding(1)
+            samplerDescriptorWrite.dstArrayElement(0)
+
+            samplerDescriptorWrite.descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+
+            samplerDescriptorWrite.pImageInfo(samplerInfo)
         }
 
         vkUpdateDescriptorSets(logicalDevice, descriptorWrites, null) // contrary to the tutorial, we send the whole batch at once
     }
 
     private fun createDescriptorPool() {
-        val poolSize = VkDescriptorPoolSize.calloc(1)
-        poolSize.descriptorCount(swapchainImages.size)
-        poolSize.type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+        val poolSizes = VkDescriptorPoolSize.calloc(2)
+        val uniformBufferSize = poolSizes[0]
+        uniformBufferSize.descriptorCount(swapchainImages.size)
+        uniformBufferSize.type(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+
+        val samplersSize = poolSizes[1]
+        samplersSize.descriptorCount(swapchainImages.size)
+        samplersSize.type(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
 
         val poolInfo = VkDescriptorPoolCreateInfo.calloc()
         poolInfo.sType(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO)
-        poolInfo.pPoolSizes(poolSize)
+        poolInfo.pPoolSizes(poolSizes)
         poolInfo.maxSets(swapchainImages.size)
 
         val pPool = memAllocLong(1)
@@ -637,16 +669,23 @@ object VulkanStart {
     }
 
     private fun createDescriptorSetLayout() {
-        val uboLayoutBinding = VkDescriptorSetLayoutBinding.calloc(1)
+        val layoutBindings = VkDescriptorSetLayoutBinding.calloc(2)
+        val uboLayoutBinding = layoutBindings[0]
         uboLayoutBinding.binding(0)
         uboLayoutBinding.descriptorCount(1)
         uboLayoutBinding.descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
 
         uboLayoutBinding.stageFlags(VK_SHADER_STAGE_VERTEX_BIT)
 
+        val samplerLayoutBinding = layoutBindings[1]
+        samplerLayoutBinding.binding(1)
+        samplerLayoutBinding.descriptorCount(1)
+        samplerLayoutBinding.descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+        samplerLayoutBinding.stageFlags(VK_SHADER_STAGE_FRAGMENT_BIT)
+
         val layoutInfo = VkDescriptorSetLayoutCreateInfo.calloc()
         layoutInfo.sType(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO)
-        layoutInfo.pBindings(uboLayoutBinding)
+        layoutInfo.pBindings(layoutBindings)
 
         val pBinding: VkPointer<VkDescriptorSetLayout> = memAllocLong(1)
         if(vkCreateDescriptorSetLayout(logicalDevice, layoutInfo, null, pBinding) != VK_SUCCESS) {
@@ -869,10 +908,6 @@ object VulkanStart {
     }
 
     private fun updateUniformBuffer(currentFrame: Int) {
-        val startTime by lazy { System.currentTimeMillis() }
-        val ubo by lazy { UniformBufferObject() }
-        val upAxis by lazy { Vector3f(0f, 0f, 1f) }
-
         val currentTime = System.currentTimeMillis()
         val time = currentTime - startTime
 
