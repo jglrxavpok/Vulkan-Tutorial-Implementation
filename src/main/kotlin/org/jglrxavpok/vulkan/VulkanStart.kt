@@ -43,6 +43,7 @@ import org.lwjgl.vulkan.VK10.VK_EVENT_SET
 import org.lwjgl.vulkan.VK10.VK_TIMEOUT
 import org.lwjgl.vulkan.VK10.VK_NOT_READY
 import org.lwjgl.vulkan.VK10.VK_SUCCESS
+import javax.imageio.ImageIO
 import javax.swing.JButton
 import javax.swing.JFrame
 
@@ -97,6 +98,10 @@ object VulkanStart {
     private var indexBufferMemory: VkDeviceMemory = nullptr
     private var descriptorSetLayout: VkDescriptorSetLayout = nullptr
     private var descriptorPool: VkDescriptorPool = nullptr
+    private var textureImage: VkImage = nullptr
+    private var textureImageMemory: VkDeviceMemory = nullptr
+    private var textureImageView: VkImageView = nullptr
+    private var textureSampler: VkSampler = nullptr
     private lateinit var uniformBuffers: Array<VkBuffer>
     private lateinit var uniformBuffersMemory: Array<VkDeviceMemory>
     private lateinit var imageAvailableSemaphores: Array<VkSemaphore>
@@ -147,6 +152,9 @@ object VulkanStart {
 
         prepareSwapchain(createCommandBuffers = false)
         createCommandPool()
+        createTextureImage()
+        createTextureImageView()
+        createTextureSampler()
         createVertexBuffer()
         createIndexBuffer()
         createUniformBuffers()
@@ -154,6 +162,203 @@ object VulkanStart {
         createDescriptorSets()
         createCommandBuffers()
         createSyncObjects()
+    }
+
+    private fun createTextureSampler() {
+        val samplerInfo = VkSamplerCreateInfo.calloc()
+        samplerInfo.sType(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO)
+        samplerInfo.magFilter(VK_FILTER_LINEAR)
+        samplerInfo.minFilter(VK_FILTER_LINEAR)
+        samplerInfo.addressModeU(VK_SAMPLER_ADDRESS_MODE_REPEAT)
+        samplerInfo.addressModeV(VK_SAMPLER_ADDRESS_MODE_REPEAT)
+        samplerInfo.addressModeW(VK_SAMPLER_ADDRESS_MODE_REPEAT)
+
+        samplerInfo.anisotropyEnable(true)
+        samplerInfo.maxAnisotropy(16f)
+        samplerInfo.borderColor(VK_BORDER_COLOR_INT_OPAQUE_BLACK)
+        samplerInfo.unnormalizedCoordinates(false)
+
+        samplerInfo.compareEnable(false)
+        samplerInfo.compareOp(VK_COMPARE_OP_ALWAYS)
+
+        samplerInfo.mipmapMode(VK_SAMPLER_MIPMAP_MODE_LINEAR)
+        samplerInfo.mipLodBias(0f)
+        samplerInfo.minLod(0f)
+        samplerInfo.maxLod(0f)
+
+        val pSampler = memAllocLong(1)
+        if(vkCreateSampler(logicalDevice, samplerInfo, null, pSampler) != VK_SUCCESS) {
+            error("failed to create sampler")
+        }
+
+        textureSampler = !pSampler
+
+        memFree(pSampler)
+    }
+
+    private fun createTextureImageView() {
+        textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_UNORM)
+    }
+
+    private fun createTextureImage() {
+        val image = ImageIO.read(javaClass.getResourceAsStream("/textures/texture.jpg"))
+        val pixels = image.getRGB(0, 0, image.width, image.height, null, 0, image.width)
+        val imageSize = (image.width * image.height * 4).toLong()
+
+        val pStagingBuffer = memAllocLong(1)
+        val pStagingMemory = memAllocLong(1)
+        createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT or VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, pStagingBuffer, pStagingMemory)
+
+        val stagingBuffer: VkBuffer = !pStagingBuffer
+        val stagingBufferMemory: VkDeviceMemory = !pStagingMemory
+        val pixelData = memAllocInt(pixels.size).put(pixels).flip() as IntBuffer
+        val pData = memAllocPointer(1)
+        vkMapMemory(logicalDevice, stagingBufferMemory, 0, imageSize, 0, pData)
+
+        val data = !pData
+        memCopy(memAddress(pixelData), data, imageSize)
+        vkUnmapMemory(logicalDevice, stagingBufferMemory)
+
+        val pImage = memAllocLong(1)
+        val pMemory = memAllocLong(1)
+        createImage(image.width, image.height, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT or VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, pImage, pMemory)
+
+        textureImage = !pImage
+        textureImageMemory = !pMemory
+
+        transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+        copyBufferToImage(stagingBuffer, textureImage, image.width, image.height)
+        transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+
+        memFree(pData)
+        memFree(pMemory)
+        memFree(pImage)
+        memFree(pStagingBuffer)
+        memFree(pStagingMemory)
+
+        vkFreeMemory(logicalDevice, stagingBufferMemory, null)
+        vkDestroyBuffer(logicalDevice, stagingBuffer, null)
+    }
+
+    private fun transitionImageLayout(image: VkImage, format: VkFormat, oldLayout: VkImageLayout, newLayout: VkImageLayout) {
+        singleTimeCommand { commandBuffer ->
+            val barrier = VkImageMemoryBarrier.calloc(1)
+            barrier.sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+            barrier.oldLayout(oldLayout)
+            barrier.newLayout(newLayout)
+
+            // must not be the default value
+            barrier.srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+            barrier.dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+
+            barrier.image(image)
+            barrier.subresourceRange()
+                    .aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
+                    .baseArrayLayer(0)
+                    .layerCount(1)
+                    .baseMipLevel(0)
+                    .levelCount(1)
+
+            val sourceStage: Int
+            val destinationStage: Int
+            when {
+                oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL -> {
+                    barrier.srcAccessMask(0)
+                    barrier.dstAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT)
+                    sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT // don't wait on anything
+                    destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT
+                }
+
+                oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL -> {
+                    barrier.srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT) // wait for writes
+                    barrier.dstAccessMask(VK_ACCESS_SHADER_READ_BIT)
+
+                    sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT
+                    destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                }
+
+                else -> error("Unsupported layout transition: $oldLayout -> $newLayout")
+            }
+
+
+            vkCmdPipelineBarrier(commandBuffer,
+                    sourceStage,
+                    destinationStage,
+                    0,
+                    null,
+                    null,
+                    barrier
+                    )
+        }
+    }
+
+    private fun copyBufferToImage(buffer: VkBuffer, image: VkImage, width: Int, height: Int) {
+        singleTimeCommand { commandBuffer ->
+            val region = VkBufferImageCopy.calloc(1)
+            region.bufferOffset(0)
+
+            // tightly packed bytes
+            region.bufferRowLength(0)
+            region.bufferImageHeight(0)
+
+            region.imageSubresource()
+                    .aspectMask(VK_IMAGE_ASPECT_COLOR_BIT)
+                    .baseArrayLayer(0)
+                    .layerCount(1)
+                    .mipLevel(0)
+
+            region.imageOffset().set(0,0,0)
+            region.imageExtent().set(width, height, 1) // depth of 1 (2D image)
+
+            vkCmdCopyBufferToImage(commandBuffer, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region)
+        }
+    }
+
+    private fun <T> singleTimeCommand(action: (VkCommandBuffer) -> T): T {
+        val buffer = beginSingleTimeCommand()
+        val result = action(buffer)
+        endSingleTimeCommands(buffer)
+        return result
+    }
+
+    private fun createImage(width: Int, height: Int, format: Int, tiling: Int, usage: Int,
+                            properties: VkMemoryPropertiesFlags, image: VkPointer<VkImage>, memory: VkPointer<VkDeviceMemory>) {
+        val imageInfo = VkImageCreateInfo.calloc()
+        imageInfo.sType(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO)
+        imageInfo.imageType(VK_IMAGE_TYPE_2D)
+        imageInfo.extent().width(width)
+        imageInfo.extent().height(height)
+        imageInfo.extent().depth(1)
+        imageInfo.mipLevels(1)
+        imageInfo.arrayLayers(1)
+
+        imageInfo.format(format)
+        imageInfo.tiling(tiling)
+
+        imageInfo.initialLayout(VK_IMAGE_LAYOUT_UNDEFINED)
+        imageInfo.usage(usage)
+        imageInfo.samples(VK_SAMPLE_COUNT_1_BIT)
+
+        if(vkCreateImage(logicalDevice, imageInfo, null, image) != VK_SUCCESS) {
+            error("failed to create texture image")
+        }
+
+        val textureImage = !image
+
+        // allocate memory for texture image
+        val memRequirements = VkMemoryRequirements.calloc()
+        vkGetImageMemoryRequirements(logicalDevice, textureImage, memRequirements)
+        val allocInfo = VkMemoryAllocateInfo.calloc()
+        allocInfo.sType(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO)
+        allocInfo.allocationSize(memRequirements.size())
+        allocInfo.memoryTypeIndex(findMemoryType(memRequirements.memoryTypeBits(), properties))
+
+        if(vkAllocateMemory(logicalDevice, allocInfo, null, memory) != VK_SUCCESS) {
+            error("failed to allocate memory for texture image")
+        }
+
+        vkBindImageMemory(logicalDevice, textureImage, !memory, 0)
     }
 
     private fun createDescriptorSets() {
@@ -334,7 +539,7 @@ object VulkanStart {
         vkFreeMemory(logicalDevice, stagingBufferMemory, null)
     }
 
-    private fun copyBuffer(srcBuffer: VkBuffer, dstBuffer: VkBuffer, size: Long) {
+    private fun beginSingleTimeCommand(): VkCommandBuffer {
         // We create a temporary command buffer to copy the data
         val allocInfo = VkCommandBufferAllocateInfo.calloc()
         allocInfo.sType(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)
@@ -353,6 +558,16 @@ object VulkanStart {
 
         vkBeginCommandBuffer(commandBuffer, beginInfo)
 
+        beginInfo.free()
+        pCommandBuffer.free()
+        allocInfo.free()
+
+        return commandBuffer
+    }
+
+    private fun copyBuffer(srcBuffer: VkBuffer, dstBuffer: VkBuffer, size: Long) {
+        val commandBuffer = beginSingleTimeCommand()
+
         val copyRegion = VkBufferCopy.calloc(1)
         copyRegion.srcOffset(0)
         copyRegion.dstOffset(0)
@@ -360,6 +575,11 @@ object VulkanStart {
 
         vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, copyRegion)
 
+        endSingleTimeCommands(commandBuffer)
+        copyRegion.free()
+    }
+
+    private fun endSingleTimeCommands(commandBuffer: VkCommandBuffer) {
         vkEndCommandBuffer(commandBuffer)
 
         // submit directly
@@ -372,13 +592,6 @@ object VulkanStart {
         vkQueueWaitIdle(graphicsQueue) // wait for transfer to complete
 
         vkFreeCommandBuffers(logicalDevice, commandPool, commandBuffer)
-
-
-        pCommandBuffers.free()
-        beginInfo.free()
-        copyRegion.free()
-        pCommandBuffer.free()
-        allocInfo.free()
     }
 
     private fun findMemoryType(typeFilter: Int, properties: VkMemoryPropertiesFlags): Int {
@@ -730,6 +943,11 @@ object VulkanStart {
 
     private fun cleanup() {
         cleanupSwapchain()
+
+        vkDestroySampler(logicalDevice, textureSampler, null)
+        vkDestroyImageView(logicalDevice, textureImageView, null)
+        vkDestroyImage(logicalDevice, textureImage, null)
+        vkFreeMemory(logicalDevice, textureImageMemory, null)
 
         vkDestroyDescriptorPool(logicalDevice, descriptorPool, null)
 
@@ -1133,6 +1351,11 @@ object VulkanStart {
         if(swapChainSupport.formats.isEmpty() || swapChainSupport.presentModes.isEmpty())
             return false
 
+        val capabilities = VkPhysicalDeviceFeatures.calloc()
+        vkGetPhysicalDeviceFeatures(device, capabilities)
+        if(!capabilities.samplerAnisotropy())
+            return false
+
         return true
     }
 
@@ -1391,34 +1614,38 @@ object VulkanStart {
     private fun createImageViews(): Array<VkImageView> {
         val result = Array<VkImageView>(swapchainImages.size) { -1 }
         swapchainImages.forEachIndexed { index, image ->
-            val createInfo = VkImageViewCreateInfo.calloc()
-            createInfo.sType(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO)
-            createInfo.image(image)
-            createInfo.viewType(VK_IMAGE_VIEW_TYPE_2D)
-            createInfo.format(swapchainImageFormat)
+            result[index] = createImageView(image, swapchainImageFormat)
+        }
 
-            createInfo.components()
+        return result
+    }
+
+    private fun createImageView(image: VkImage, format: VkFormat): VkImageView {
+        val createInfo = VkImageViewCreateInfo.calloc()
+        createInfo.sType(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO)
+        createInfo.image(image)
+        createInfo.viewType(VK_IMAGE_VIEW_TYPE_2D)
+        createInfo.format(format)
+
+        createInfo.components()
                 .r(VK_COMPONENT_SWIZZLE_IDENTITY)
                 .g(VK_COMPONENT_SWIZZLE_IDENTITY)
                 .b(VK_COMPONENT_SWIZZLE_IDENTITY)
                 .a(VK_COMPONENT_SWIZZLE_IDENTITY)
 
-            createInfo.subresourceRange()
+        createInfo.subresourceRange()
                 .aspectMask(VK_IMAGE_ASPECT_COLOR_BIT) // color target
                 .baseMipLevel(0)
                 .levelCount(1)
                 .baseArrayLayer(0)
                 .layerCount(1)
 
-            val handle = MemoryStack.stackPush().use {
-                val pView = it.mallocLong(1)
-                vkCreateImageView(logicalDevice, createInfo, null, pView)
-                pView[0]
-            }
-            result[index] = handle
+        val handle = MemoryStack.stackPush().use {
+            val pView = it.mallocLong(1)
+            vkCreateImageView(logicalDevice, createInfo, null, pView)
+            pView[0]
         }
-
-        return result
+        return handle
     }
 
     object DebugCallback: VkDebugReportCallbackEXT() {

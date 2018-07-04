@@ -6,9 +6,11 @@ import java.nio.LongBuffer
 typealias VkPresentModeKHR = Int
 typealias VkFormat = Int
 typealias VkMemoryPropertiesFlags = Int
+typealias VkImageLayout = Int
 
 typealias VkPointer<T> = LongBuffer
 
+typealias VkSampler = Long
 typealias VkDescriptorSet = Long
 typealias VkDescriptorPool = Long
 typealias VkDescriptorSetLayout = Long
