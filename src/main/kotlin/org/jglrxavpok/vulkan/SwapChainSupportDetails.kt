@@ -1,6 +1,5 @@
 package org.jglrxavpok.vulkan
 
-import org.lwjgl.vulkan.KHRSurface.vkGetPhysicalDeviceSurfacePresentModesKHR
 import org.lwjgl.vulkan.VkSurfaceCapabilitiesKHR
 import org.lwjgl.vulkan.VkSurfaceFormatKHR
 
