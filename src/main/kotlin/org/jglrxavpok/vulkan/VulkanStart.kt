@@ -13,32 +13,9 @@ import org.lwjgl.vulkan.KHRSurface.*
 import org.lwjgl.vulkan.KHRSwapchain.*
 import org.lwjgl.vulkan.VK10.*
 import java.nio.ByteBuffer
-import org.lwjgl.vulkan.VK10.VK_FORMAT_B8G8R8A8_UNORM
 import java.nio.IntBuffer
 import java.nio.LongBuffer
-import org.lwjgl.vulkan.EXTDebugReport.VK_ERROR_VALIDATION_FAILED_EXT
 import org.lwjgl.vulkan.KHRDisplaySwapchain.VK_ERROR_INCOMPATIBLE_DISPLAY_KHR
-import org.lwjgl.vulkan.KHRSwapchain.VK_ERROR_OUT_OF_DATE_KHR
-import org.lwjgl.vulkan.KHRSurface.VK_ERROR_NATIVE_WINDOW_IN_USE_KHR
-import org.lwjgl.vulkan.KHRSurface.VK_ERROR_SURFACE_LOST_KHR
-import org.lwjgl.vulkan.VK10.VK_ERROR_FORMAT_NOT_SUPPORTED
-import org.lwjgl.vulkan.VK10.VK_ERROR_TOO_MANY_OBJECTS
-import org.lwjgl.vulkan.VK10.VK_ERROR_INCOMPATIBLE_DRIVER
-import org.lwjgl.vulkan.VK10.VK_ERROR_FEATURE_NOT_PRESENT
-import org.lwjgl.vulkan.VK10.VK_ERROR_EXTENSION_NOT_PRESENT
-import org.lwjgl.vulkan.VK10.VK_ERROR_LAYER_NOT_PRESENT
-import org.lwjgl.vulkan.VK10.VK_ERROR_MEMORY_MAP_FAILED
-import org.lwjgl.vulkan.VK10.VK_ERROR_DEVICE_LOST
-import org.lwjgl.vulkan.VK10.VK_ERROR_INITIALIZATION_FAILED
-import org.lwjgl.vulkan.VK10.VK_ERROR_OUT_OF_DEVICE_MEMORY
-import org.lwjgl.vulkan.VK10.VK_ERROR_OUT_OF_HOST_MEMORY
-import org.lwjgl.vulkan.KHRSwapchain.VK_SUBOPTIMAL_KHR
-import org.lwjgl.vulkan.VK10.VK_INCOMPLETE
-import org.lwjgl.vulkan.VK10.VK_EVENT_RESET
-import org.lwjgl.vulkan.VK10.VK_EVENT_SET
-import org.lwjgl.vulkan.VK10.VK_TIMEOUT
-import org.lwjgl.vulkan.VK10.VK_NOT_READY
-import org.lwjgl.vulkan.VK10.VK_SUCCESS
 import javax.swing.JButton
 import javax.swing.JFrame
 
@@ -53,7 +30,7 @@ object VulkanStart {
     const val WIDTH = 800
     const val HEIGHT = 600
     const val enableValidationLayers = true
-    val validationLayers = arrayOf("VK_LAYER_LUNARG_core_validation")
+    val validationLayers = arrayOf("VK_LAYER_LUNARG_standard_validation")
     val deviceExtensions = arrayOf(VK_KHR_SWAPCHAIN_EXTENSION_NAME)
 
     // Vulkan stuff
@@ -416,7 +393,7 @@ object VulkanStart {
         renderPass = MemoryStack.stackPush().use {
             val pRenderPass = it.mallocLong(1)
             if(vkCreateRenderPass(logicalDevice, renderPassInfo, null, pRenderPass) != VK_SUCCESS)
-                error("Could not create rener pass")
+                error("Could not create render pass")
             pRenderPass[0]
         }
     }
