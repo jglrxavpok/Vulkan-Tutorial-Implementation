@@ -53,6 +53,8 @@ object VulkanStart {
     const val UINT64_MAX: Long = -1
 
     const val MaxFramesInFlight = 2
+    val startTime by lazy { System.currentTimeMillis() }
+
 
     private val vertices = arrayOf(
             Vertex(Vector2f(-0.5f, -0.5f), Vector3f(1.0f, 0.0f, 0.0f)),
@@ -656,7 +658,6 @@ object VulkanStart {
     }
 
     private fun updateUniformBuffer(currentFrame: Int) {
-        val startTime by lazy { System.currentTimeMillis() }
         val ubo by lazy { UniformBufferObject() }
         val upAxis by lazy { Vector3f(0f, 0f, 1f) }
 
